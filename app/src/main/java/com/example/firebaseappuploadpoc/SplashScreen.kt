@@ -47,7 +47,7 @@ fun SplashScreen(onNavigateToLogin: () -> Unit) {
             delay(1000)
         }
 
-        val info = FirestoreVersionChecker.checkVersion()
+        val info = RemoteConfigVersionChecker.checkVersion()
         updateState = if (
             info != null &&
             info.latestVersionCode > BuildConfig.VERSION_CODE &&
