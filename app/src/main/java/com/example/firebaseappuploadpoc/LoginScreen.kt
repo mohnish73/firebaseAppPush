@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.firebaseappuploadpoc.ui.theme.White
 
 @Composable
 fun LoginScreen() {
@@ -210,6 +211,8 @@ fun LoginScreen() {
                             text = "LOGIN",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
+                            color = White,
+
                             letterSpacing = 1.sp
                         )
                     }

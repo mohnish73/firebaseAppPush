@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
+import com.example.firebaseappuploadpoc.ui.theme.White
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -57,14 +59,48 @@ fun ForceUpdateDialog(downloadUrl: String, releaseNotes: String) {
     val primaryBlue = Color(0xFF1A237E)
     val accentBlue  = Color(0xFF3949AB)
 
-    var downloadState by remember { mutableStateOf(DownloadState.IDLE) }
-    var progress      by remember { mutableFloatStateOf(0f) }
-    var downloadId    by remember { mutableLongStateOf(-1L) }
+    var downloadState      by remember { mutableStateOf(DownloadState.IDLE) }
+    var progress           by remember { mutableFloatStateOf(0f) }
+    var downloadId         by remember { mutableLongStateOf(-1L) }
+
+    val apkFile = remember {
+        File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "app-update.apk")
+    }
+
+    // True if APK was already downloaded in a previous attempt
+    var isAlreadyDownloaded by remember { mutableStateOf(apkFile.exists() && apkFile.length() > 0) }
 
     val downloadManager = remember {
         context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
     }
 
+    // Triggers the Android native installer
+    fun installApk() {
+        try {
+            val apkUri = if (downloadId != -1L) {
+                // Fresh download just completed — use DownloadManager URI
+                downloadManager.getUriForDownloadedFile(downloadId)
+            } else {
+                // APK was already on disk from previous download — use FileProvider
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    apkFile
+                )
+            }
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(intent)
+            isAlreadyDownloaded = true
+        } catch (e: Exception) {
+            downloadState = DownloadState.ERROR
+        }
+    }
+
+    // Poll download progress every 500ms
     LaunchedEffect(downloadId) {
         if (downloadId == -1L) return@LaunchedEffect
 
@@ -87,21 +123,8 @@ fun ForceUpdateDialog(downloadUrl: String, releaseNotes: String) {
 
                 when (status) {
                     DownloadManager.STATUS_SUCCESSFUL -> {
-                        // Use DownloadManager's own URI — no FileProvider needed
-                        val apkUri = downloadManager.getUriForDownloadedFile(downloadId)
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(apkUri, "application/vnd.android.package-archive")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        try {
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            downloadState = DownloadState.ERROR
-                        }
-                        // Reset so dialog shows "Update Now" again if user cancels install
-                        progress = 1f
                         downloadState = DownloadState.IDLE
+                        installApk() // launch native installer immediately
                     }
                     DownloadManager.STATUS_FAILED -> {
                         downloadState = DownloadState.ERROR
@@ -193,29 +216,29 @@ fun ForceUpdateDialog(downloadUrl: String, releaseNotes: String) {
                     DownloadState.IDLE -> {
                         Button(
                             onClick = {
-                                // Delete old apk if exists
-                                File(
-                                    context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-                                    "app-update.apk"
-                                ).takeIf { it.exists() }?.delete()
+                                if (isAlreadyDownloaded) {
+                                    // APK already on device — skip download, go straight to install
+                                    installApk()
+                                } else {
+                                    // Fresh download
+                                    downloadState = DownloadState.DOWNLOADING
+                                    progress = 0f
 
-                                downloadState = DownloadState.DOWNLOADING
-                                progress = 0f
+                                    val request = DownloadManager.Request(Uri.parse(downloadUrl))
+                                        .setTitle("App Update")
+                                        .setDescription("Downloading new version...")
+                                        .setDestinationInExternalFilesDir(
+                                            context,
+                                            Environment.DIRECTORY_DOWNLOADS,
+                                            "app-update.apk"
+                                        )
+                                        .setNotificationVisibility(
+                                            DownloadManager.Request.VISIBILITY_VISIBLE
+                                        )
+                                        .setMimeType("application/vnd.android.package-archive")
 
-                                val request = DownloadManager.Request(Uri.parse(downloadUrl))
-                                    .setTitle("App Update")
-                                    .setDescription("Downloading new version...")
-                                    .setDestinationInExternalFilesDir(
-                                        context,
-                                        Environment.DIRECTORY_DOWNLOADS,
-                                        "app-update.apk"
-                                    )
-                                    .setNotificationVisibility(
-                                        DownloadManager.Request.VISIBILITY_VISIBLE
-                                    )
-                                    .setMimeType("application/vnd.android.package-archive")
-
-                                downloadId = downloadManager.enqueue(request)
+                                    downloadId = downloadManager.enqueue(request)
+                                }
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -228,13 +251,16 @@ fun ForceUpdateDialog(downloadUrl: String, releaseNotes: String) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.CloudDownload,
+                                    imageVector = if (isAlreadyDownloaded)
+                                        Icons.Filled.SystemUpdate else Icons.Filled.CloudDownload,
                                     contentDescription = null,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = "Update Now",
+                                    // Shows "Install Now" if already downloaded, "Update Now" if not
+                                    text = if (isAlreadyDownloaded) "Install Now" else "Update Now",
                                     fontSize = 15.sp,
+                                    color = White,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -282,6 +308,9 @@ fun ForceUpdateDialog(downloadUrl: String, releaseNotes: String) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
                             onClick = {
+                                // On retry delete the partial file and start fresh
+                                apkFile.takeIf { it.exists() }?.delete()
+                                isAlreadyDownloaded = false
                                 downloadState = DownloadState.IDLE
                                 downloadId = -1L
                             },
